@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stellenbosch Community Crime Watch</title>
+
+<!-- Tailwind CSS -->
+<link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<!-- PWA Manifest -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#dc2626">
+
+<style>
+#map { height: 60vh; width: 100%; }
+.popup-btn { cursor:pointer; color:blue; text-decoration:underline; margin-right:5px;}
+.info.legend i {border-radius:3px;}
+img.marker-photo {max-width:200px; display:block; margin-top:5px;}
+</style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+<header class="bg-red-700 text-white p-4 text-center">
+<h1 class="text-3xl font-bold">Stellenbosch Community Crime Watch</h1>
+<p>Submit reports, mark hotspots, illegal activity, vote, and verify</p>
+</header>
+
+<main class="max-w-xl mx-auto p-4 space-y-4">
+
+<section class="bg-white shadow-md rounded p-4">
+<h2 class="text-xl font-semibold mb-2">Submit Report / Illegal Place</h2>
+<form id="crimeForm" class="space-y-2">
+<select name="type" class="w-full border rounded p-2">
+<option value="crime">Crime report</option>
+<option value="hotspot">Community hotspot</option>
+<option value="illegal_drugs">Illegal — Drugs</option>
+<option value="illegal_alcohol">Illegal — Alcohol</option>
+</select>
+<input name="title" class="w-full border rounded p-2" required placeholder="Title / label">
+<input name="neighborhood" class="w-full border rounded p-2" required placeholder="Neighborhood">
+<textarea name="description" rows="2" class="w-full border rounded p-2" placeholder="Details"></textarea>
+<input type="file" name="photo" id="photo" accept="image/*" class="w-full border rounded p-2">
+<div class="grid grid-cols-2 gap-2">
+<input name="lat" type="number" step="any" class="border rounded p-2" placeholder="Latitude">
+<input name="lng" type="number" step="any" class="border rounded p-2" placeholder="Longitude">
+</div>
+<div class="flex space-x-2 mt-2">
+<button type="submit" class="bg-red-600 text-white px-3 py-2 rounded w-1/2">Submit</button>
+<button type="button" id="markOnMapBtn" class="bg-gray-300 px-3 py-2 rounded w-1/2">Mark on map</button>
+</div>
+<div id="formMsg" class="text-green-600 font-semibold mt-1"></div>
+</form>
+</section>
+
+<section class="bg-white shadow-md rounded p-4">
+<h2 class="text-xl font-semibold mb-2">Filters & Search</h2>
+<div class="grid grid-cols-2 gap-2 mb-2">
+<div>
+<label><input type="checkbox" class="filter-type" value="crime" checked> Crime</label><br>
+<label><input type="checkbox" class="filter-type" value="hotspot" checked> Hotspot</label><br>
+<label><input type="checkbox" class="filter-type" value="illegal_drugs" checked> Drugs</label><br>
+<label><input type="checkbox" class="filter-type" value="illegal_alcohol" checked> Alcohol</label>
+</div>
+<div>
+<label><input type="checkbox" id="filter-verified" checked> Include Verified</label><br>
+<label><input type="checkbox" id="filter-flagged" checked> Include Flagged</label><br>
+<label><input type="checkbox" id="toggle-heatmap" checked> Show Heatmap</label>
+</div>
+</div>
+<div class="flex space-x-2">
+<input type="text" id="neighborhoodSearch" class="border rounded p-2 w-full" placeholder="Search by neighborhood">
+<button id="searchBtn" class="bg-red-600 text-white px-3 py-2 rounded">Search</button>
+<button id="resetSearchBtn" class="bg-gray-300 px-3 py-2 rounded">Reset</button>
+</div>
+</section>
+
+<section class="bg-white shadow-md rounded p-4">
+<div id="map"></div>
+</section>
+
+</main>
+
+<footer class="text-center text-gray-500 text-sm p-2">
+© 2025 Stellenbosch Community Crime Watch
+</footer>
+
+<!-- Leaflet & Heatmap -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+<!-- EmailJS -->
+<script src="https://cdn.emailjs.com/dist/email.min.js"></script>
+<script>emailjs.init('YOUR_EMAILJS_USER_ID');</script>
+
+<script>
+// --- Map ---
+const map = L.map('map').setView([-33.934,18.866],13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'}).addTo(map);
+
+// --- Storage ---
+let reports = JSON.parse(localStorage.getItem('crimeReports'))||[];
+let hotspots = JSON.parse(localStorage.getItem('hotspots'))||[];
+let illegals = JSON.parse(localStorage.getItem('illegals'))||[];
+
+function iconUrl(type){
+switch(type){
+case 'crime': return 'https://maps.google.com/mapfiles/ms/icons/red-dot.png';
+case 'hotspot': return 'https://maps.google.com/mapfiles/ms/icons/orange-dot.png';
+case 'illegal_drugs': return 'https://maps.google.com/mapfiles/ms/icons/purple-dot.png';
+case 'illegal_alcohol': return 'https://maps.google.com/mapfiles/ms/icons/brown-dot.png';
+default: return 'https://maps.google.com/mapfiles/ms/icons/red-dot.png';
+}}
+function makeIcon(type){return L.icon({iconUrl:iconUrl(type),iconSize:[28,40],iconAnchor:[14,40]});}
+
+// --- Heatmap (weighted by votes) ---
+let heatLayer = null;
+function updateHeatmap(){
+if(heatLayer) map.removeLayer(heatLayer);
+const points=[];
+reports.forEach(r=>{if(r.lat&&r.lng){const w=Math.max(1+(r.votes||0),0.5);points.push([r.lat,r.lng,w]);}});
+hotspots.forEach(r=>{if(r.lat&&r.lng) points.push([r.lat,r.lng,0.5]);});
+illegals.forEach(r=>{if(r.lat&&r.lng){const w=Math.max(0.7+(r.votes||0)/2,0.3);points.push([r.lat,r.lng,w]);}});
+heatLayer = L.heatLayer(points,{radius:25,blur:15,maxZoom:17,gradient:{0.2:'blue',0.4:'lime',0.6:'orange',0.8:'red'}});
+if(document.getElementById('toggle-heatmap').checked) heatLayer.addTo(map);
+}
+
+// --- Render Markers ---
+function renderMarkers(){
+map.eachLayer(layer=>{if(layer instanceof L.Marker) map.removeLayer(layer);});
+const checkedTypes=Array.from(document.querySelectorAll('.filter-type:checked')).map(cb=>cb.value);
+const includeVerified=document.getElementById('filter-verified').checked;
+const includeFlagged=document.getElementById('filter-flagged').checked;
+
+function addMarkers(arr,typeKey){
+arr.forEach((r,i)=>{
+const markerType=r.type||typeKey;
+if(!checkedTypes.includes(markerType)) return;
+if(!includeVerified && r.verified>0) return;
+if(!includeFlagged && r.flags>0) return;
+if(r.lat&&r.lng){
+const popupContent=`<strong>${r.title}</strong><br>
+${r.description}<br>${r.neighborhood||''}<br>
+${r.photo?`<img src="${r.photo}" class="marker-photo">`:''}
+<span class="popup-btn" onclick="flagEntry('${typeKey}',${i})">Flag</span>
+<span class="popup-btn" onclick="verifyEntry('${typeKey}',${i})">Verify</span>
+<span class="popup-btn" onclick="upvoteEntry('${typeKey}',${i})">👍</span>
+<span class="popup-btn" onclick="downvoteEntry('${typeKey}',${i})">👎</span>
+<br><em>Flags: ${r.flags||0} | Verified: ${r.verified||0} | Votes: ${r.votes||0}</em>`;
+const marker=L.marker([r.lat,r.lng],{icon:makeIcon(markerType)});
+marker.bindPopup(popupContent).addTo(map);
+}});
+}
+
+addMarkers(reports,'crime');
+addMarkers(hotspots,'hotspot');
+addMarkers(illegals,'illegal');
+updateHeatmap();
+}
+
+window.flagEntry=function(type,i){let arr=type==='crime'?reports:type==='hotspot'?hotspots:illegals; arr[i].flags=(arr[i].flags||0)+1; localStorage.setItem(type==='crime'?'crimeReports':type==='hotspot'?'hotspots':'illegals',JSON.stringify(arr)); renderMarkers();}
+window.verifyEntry=function(type,i){let arr=type==='crime'?reports:type==='hotspot'?hotspots:illegals; arr[i].verified=(arr[i].verified||0)+1; localStorage.setItem(type==='crime'?'crimeReports':type==='hotspot'?'hotspots':'illegals',JSON.stringify(arr)); renderMarkers();}
+window.upvoteEntry=function(type,i){let arr=type==='crime'?reports:type==='hotspot'?hotspots:illegals; arr[i].votes=(arr[i].votes||0)+1; localStorage.setItem(type==='crime'?'crimeReports':type==='hotspot'?'hotspots':'illegals',JSON.stringify(arr)); renderMarkers();}
+window.downvoteEntry=function(type,i){let arr=type==='crime'?reports:type==='hotspot'?hotspots:illegals; arr[i].votes=(arr[i].votes||0)-1; localStorage.setItem(type==='crime'?'crimeReports':type==='hotspot'?'hotspots':'illegals',JSON.stringify(arr)); renderMarkers();}
+
+renderMarkers();
+
+// --- Photo Upload ---
+async function uploadPhoto(file){if(!file) return null; const url='https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload'; const formData=new FormData(); formData.append('file',file); formData.append('upload_preset','YOUR_UPLOAD_PRESET'); try{const res=await fetch(url,{method:'POST',body:formData}); const data=await res.json(); return data.secure_url;}catch(err){console.error('Photo upload failed',err); return null;}}
+
+// --- Form Submit ---
+const crimeForm=document.getElementById('crimeForm');
+crimeForm.addEventListener('submit',async function(e){
+e.preventDefault();
+const type=this.type.value;
+const title=this.title.value.trim();
+const neighborhood=this.neighborhood.value.trim();
+const description=this.description.value.trim();
+const lat=this.lat.value?parseFloat(this.lat.value):null;
+const lng=this.lng.value?parseFloat(this.lng.value):null;
+const photoFile=document.getElementById('photo').files[0];
+const photoURL=await uploadPhoto(photoFile);
+const entry={title,description,neighborhood,lat,lng,type,flags:0,verified:0,votes:0,photo:photoURL||null};
+if(type==='crime'){reports.push(entry);localStorage.setItem('crimeReports',JSON.stringify(reports));}
+else if(type==='hotspot'){hotspots.push(entry);localStorage.setItem('hotspots',JSON.stringify(hotspots));}
+else if(type==='illegal_drugs'||type==='illegal_alcohol'){illegals.push(entry);localStorage.setItem('illegals',JSON.stringify(illegals));}
+renderMarkers(); this.reset(); document.getElementById('formMsg').textContent='Submitted!';
+
+// EmailJS notification
+if(type==='crime'){
+emailjs.send('YOUR_SERVICE_ID','YOUR_TEMPLATE_ID',{crime_type:title,neighborhood,description,latitude:lat,longitude:lng,photo:photoURL||'No photo'}).then(res=>console.log('Email sent',res.status,res.text)).catch(err=>console.error('Email failed',err));
+}
+});
+
+// --- Map Click ---
+let markOnMapMode=false;
+const markBtn=document.getElementById('markOnMapBtn');
+markBtn.addEventListener('click',()=>{markOnMapMode=true; markBtn.textContent='Click map to place marker'; markBtn.classList.add('bg-yellow-200');});
+map.on('click',async e=>{
+if(!markOnMapMode) return;
+const lat=e.latlng.lat, lng=e.latlng.lng;
+const typeChoice=prompt('Add as: 1) Hotspot 2) Drugs 3) Alcohol 4) Crime. Enter 1-4.');
+if(!typeChoice){markOnMapMode=false; markBtn.textContent='Mark on map'; markBtn.classList.remove('bg-yellow-200'); return;}
+const title=prompt('Title:')||'', description=prompt('Description:')||'', neighborhood=prompt('Neighborhood:')||'';
+const photoFile=document.getElementById('photo').files[0]; const photoURL=await uploadPhoto(photoFile);
+const entry={title,description,neighborhood,lat,lng,flags:0,verified:0,votes:0,photo:photoURL||null};
+if(typeChoice==='1'){hotspots.push(entry);localStorage.setItem('hotspots',JSON.stringify(hotspots));}
+else if(typeChoice==='2'){illegals.push({...entry,type:'illegal_drugs'});localStorage.setItem('illegals',JSON.stringify(illegals));}
+else if(typeChoice==='3'){illegals.push({...entry,type:'illegal_alcohol'});localStorage.setItem('illegals',JSON.stringify(illegals));}
+else if(typeChoice==='4'){reports.push({...entry,type:'crime'});localStorage.setItem('crimeReports',JSON.stringify(reports));}
+renderMarkers(); markOnMapMode=false; markBtn.textContent='Mark on map'; markBtn.classList.remove('bg-yellow-200');
+});
+
+// --- Legend ---
+const legend=L.control({position:'bottomright'});
+legend.onAdd=function(map){const div=L.DomUtil.create('div','info legend p-2 bg-white rounded shadow text-sm');div.innerHTML=
+'<strong>Legend</strong><br>'+
+'<i style="background:red;width:18px;height:18px;display:inline-block;margin-right:5px;"></i>Crime report<br>'+
+'<i style="background:orange;width:18px;height:18px;display:inline-block;margin-right:5px;"></i>Hotspot<br>'+
+'<i style="background:purple;width:18px;height:18px;display:inline-block;margin-right:5px;"></i>Drugs<br>'+
+'<i style="background:brown;width:18px;height:18px;display:inline-block;margin-right:5px;"></i>Alcohol'; return div;};
+legend.addTo(map);
+
+// --- Filters & Heatmap ---
+document.querySelectorAll('.filter-type').forEach(cb=>cb.addEventListener('change',renderMarkers));
+document.getElementById('filter-verified').addEventListener('change',renderMarkers);
+document.getElementById('filter-flagged').addEventListener('change',renderMarkers);
+document.getElementById('toggle-heatmap').addEventListener('change',()=>{if(document.getElementById('toggle-heatmap').checked) updateHeatmap(); else if(heatLayer) map.removeLayer(heatLayer);});
+
+// --- Neighborhood Search ---
+function getAllReports(){return [...reports,...hotspots,...illegals];}
+document.getElementById('searchBtn').addEventListener('click',()=>{
+const query=document.getElementById('neighborhoodSearch').value.trim().toLowerCase();
+if(!query)return alert('Enter neighborhood.');
+const matched=getAllReports().filter(r=>r.neighborhood&&r.neighborhood.toLowerCase().includes(query)&&r.lat&&r.lng);
+if(matched.length===0){alert('No reports found.');return;}
+const latlngs=matched.map(r=>[r.lat,r.lng]);
+map.fitBounds(L.latLngBounds(latlngs),{padding:[50,50]});
+matched.forEach(r=>{
+const marker=L.marker([r.lat,r.lng],{icon:makeIcon(r.type||'crime')}).addTo(map);
+marker.bindPopup(`<strong>${r.title}</strong><br>${r.description}<br>${r.neighborhood||''}<br>${r.photo?`<img src="${r.photo}" class="marker-photo">`:''}`).openPopup();
+setTimeout(()=>map.removeLayer(marker),5000);
+});
+});
+document.getElementById('resetSearchBtn').addEventListener('click',()=>{document.getElementById('neighborhoodSearch').value=''; renderMarkers();});
+
+// --- PWA Service Worker ---
+if('serviceWorker' in navigator){
+window.addEventListener('load',()=>{navigator.serviceWorker.register('./service-worker.js').then(reg=>console.log('SW registered',reg)).catch(err=>console.log('SW failed',err));});
+}
+</script>
+</body>
+</html>
